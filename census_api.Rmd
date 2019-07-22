@@ -1,0 +1,139 @@
+---
+title: "Census API data import"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+---
+
+*Shingai Samudzi (@samudzi)*
+
+*June 17,2019*
+
+# Prerequisites
+
+To get started, you will need to install all of the necessary libraries, as well as add the API key to the renvironment
+
+```{r}
+library(censusapi)
+library(dplyr)
+library(data.table)
+
+#add aws-cli connection
+#source("awscli_connect.R")
+
+# Add key to .Renviron
+Sys.setenv(CENSUS_KEY="5f7e600cffb6db8ddc21129cda45a74ce7447bcc")
+# Reload .Renviron
+readRenviron("~/.Renviron")
+# Check to see that the expected key is output in your R console
+Sys.getenv("CENSUS_KEY")
+
+```
+
+To see a current table of every available endpoint, run listCensusApis:
+```{r}
+#apis <- listCensusApis()
+#View(apis)
+```
+
+
+# Data Import and Shaping
+
+We are most interested in the zip code business patterns, so we will focus on that endpoint.  Here, we want to be able to get the absolute values from specific years, as well as measure percent changes
+```{r}
+zbp_2016 <- getCensus(name = "zbp",
+ vintage = 2016,
+ vars = c("GEO_TTL", "EMPSZES_TTL", "EMP", "ESTAB", "PAYANN"),
+ region = "zipcode:*")
+head(zbp_2016)
+
+zbp_2013 <- getCensus(name = "zbp",
+ vintage = 2013,
+ vars = c("EMP", "ESTAB", "PAYANN"),
+ region = "zipcode:*")
+head(zbp_2013)
+
+zbp_2011 <- getCensus(name = "zbp",
+ vintage = 2011,
+ vars = c("EMP", "ESTAB", "PAYANN"),
+ region = "zipcode:*")
+head(zbp_2011)
+
+#Check the internal structure of the data that has been returned
+str(zbp_2011)
+str(zbp_2013)
+str(zbp_2016)
+```
+
+We have our data, now there are two things we need to do.  First, using the str() function, we can see that all fields in all three dataframes are char type.  We need EMP, ESTAB, and PAYANN fields to be integers instead.  Additionally, we need to change each column to signify the year so that we can more easily do transformations in Looker at the data modelling layer.
+
+```{r}
+
+#transforming key fields from character to numeric datatype
+
+zbp_2011a <- mutate_at(zbp_2011, vars(EMP, ESTAB, PAYANN), function(x) as.numeric(as.character(x)))
+zbp_2013a <- mutate_at(zbp_2013, vars(EMP, ESTAB, PAYANN), function(x) as.numeric(as.character(x)))
+zbp_2016a <- mutate_at(zbp_2016, vars(EMP, ESTAB, PAYANN), function(x) as.numeric(as.character(x)))
+
+# check datatypes to confirm change (just doing one for show)
+str(zbp_2016a)
+
+# Now we rename columns to prep for join
+
+# Rename a column in R
+setnames(zbp_2011a, old=c("EMP","ESTAB","PAYANN"), new=c("EMP_2011", "ESTAB_2011","PAYANN_2011"))
+setnames(zbp_2013a, old=c("EMP","ESTAB","PAYANN"), new=c("EMP_2013", "ESTAB_2013","PAYANN_2013"))
+setnames(zbp_2016a, old=c("EMP","ESTAB","PAYANN"), new=c("EMP_2016", "ESTAB_2016","PAYANN_2016"))
+
+# Check datatypes again to make sure column transformations occurred correctly
+str(zbp_2011a)
+```
+
+Finally, let's join all of the dataframes into a single giant dataframe, using the zipcode field as the join field.  We'll use a left outer join to make sure that all rows are preserved, and focus actual modeling in Looker
+
+```{r}
+#Join 2011 with 2013 data
+df<-merge(x=zbp_2011a,y=zbp_2013a,by="zipcode",all=TRUE)
+
+#Join 2016 with rest of data
+df_a<-merge(x=df,y=zbp_2016a,by="zipcode",all=TRUE)
+
+#check data structure to ensure no mistakes made
+str(df_a)
+
+#check full dataframe
+View(df_a)
+
+```
+
+# Shipping to Datalake/DataWarehouse
+
+Now that the data is fully built, we will need to send it over to a datalake or for ingestion into the datawarehouse.  We'll cover two options - AWS S3 and Google BigQuery.  Fortunately, there are R interfaces for communicating and sharing data between the two.  Additionally, the dplyr package can be used to communicate directly with Snowflake (which we use for our DW).  Let's take a look at all three.
+
+## Connecting to AWS
+
+The CloudyR project provides an R interface for AWS S3.  You can see more about this package here:
+<https://github.com/cloudyr/aws.s3>
+
+
+## Connecting to Google BQ
+
+The R-DBI projects provides an R interface for Google BigQuery.  You can see more about this packages here:
+<https://github.com/r-dbi/bigrquery>
+
+
+## Connecting to Snowflake
+
+The Snowflake connector is a bit more complex to install and configure, but also allows the dplyr package to write SQL queries on our behalf.  Given that our pipeline is S3 Datalake -> Snowflake -> Looker, this allows us to skip an intermediate step from this initial dataset creation in R.
+
+You can see the dplyr vignette here:
+<https://www.snowflake.com/blog/integrating-the-snowflake-data-warehouse-with-r-via-dplyr/>
+
+And their github repo here:
+<https://github.com/snowflakedb/dplyr-snowflakedb>
+
+
+# Next Steps
+(next step is to try the Snowflake connector first to create the db table, then push the df_a dataframe into it)
